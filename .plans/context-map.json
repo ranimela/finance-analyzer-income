@@ -1,0 +1,24 @@
+{
+  "project": "finance-analyzer-income",
+  "root": "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income",
+  "inputs": [
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\data\\inputs\\Agreements Payments.xlsx",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\data\\inputs\\~$כרטסות הכנסות 24-26.xlsx",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\data\\inputs\\כרטסות הכנסות 24-26.xlsx"
+  ],
+  "plans": [
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.plans\\phase1-income-cleaning-step6.md"
+  ],
+  "src": [],
+  "rules": [
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\builder.md",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\chaos_monkey.md",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\context_janitor.md",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\docs_synchronizer.md",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\planner.md",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\release_wrangler.md",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\telemetry_sentry.md",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\ux_architect.md",
+    "C:\\Users\\rmelamed\\Projects\\finance-analyzer-income\\.agents\\rules\\validator.md"
+  ]
+}

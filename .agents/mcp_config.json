@@ -1,0 +1,14 @@
+{
+  "mcp_servers": {
+    "ui_layouts_library": {
+      "command": "npx",
+      "args": ["-y", "@mcp-ui/server"],
+      "enabled": true
+    },
+    "web_design_research": {
+      "command": "npx",
+      "args": ["-y", "a2asearch-mcp"],
+      "enabled": true
+    }
+  }
+}

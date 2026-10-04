@@ -1,0 +1,19 @@
+# Ignore all financial and proprietary raw/processed data
+data/
+*.xlsx
+*.xls
+*.csv
+
+# Python environments & caches
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+
+# OS and IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
