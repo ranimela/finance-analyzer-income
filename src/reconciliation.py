@@ -128,6 +128,8 @@ def generate_income_working_file(
         "adjusted_income_calculated_rows": 0,
     }
 
+    intermediate_records: list[dict[str, Any]] = []
+
     for row in data_rows:
         raw_f = row[col_f_idx].strip() if len(row) > col_f_idx else ""
         raw_j = row[col_j_idx].strip() if len(row) > col_j_idx else ""
@@ -211,13 +213,105 @@ def generate_income_working_file(
                 duration_str = ""
                 adj_income_str = ""
 
-        enriched_rows.append(
-            row + [occ_str, s_date_str, e_date_str, duration_str, adj_income_str]
-        )
+        # Intermediate collection before quarter allocation
+        intermediate_records.append({
+            "base_row": row,
+            "occ_str": occ_str,
+            "s_date_str": s_date_str,
+            "e_date_str": e_date_str,
+            "duration_str": duration_str,
+            "adj_income_str": adj_income_str,
+        })
+
+    # 3. Determine latest quarter needed
+    # Default minimum end year/quarter: 2024 Q1
+    max_year = 2024
+    max_quarter = 1
+
+    for rec in intermediate_records:
+        e_s = rec["e_date_str"]
+        if e_s and "ERROR" not in e_s:
+            try:
+                de = datetime.datetime.strptime(e_s, "%d/%m/%Y")
+                q_num = (de.month - 1) // 3 + 1
+                if (de.year > max_year) or (de.year == max_year and q_num > max_quarter):
+                    max_year = de.year
+                    max_quarter = q_num
+            except Exception:
+                pass
+
+    # Build sequence of quarter tuples: (year, q_num, label)
+    quarter_cols: list[tuple[int, int, str]] = []
+    curr_y = 2024
+    curr_q = 1
+    while (curr_y < max_year) or (curr_y == max_year and curr_q <= max_quarter):
+        yy_str = str(curr_y)[-2:]
+        lbl = f"{yy_str}Q{curr_q}"
+        quarter_cols.append((curr_y, curr_q, lbl))
+        curr_q += 1
+        if curr_q > 4:
+            curr_q = 1
+            curr_y += 1
+
+    quarter_headers = [col[2] for col in quarter_cols]
+    final_header = new_header + quarter_headers
+    final_rows: list[list[str]] = [final_header]
+
+    metrics["quarter_columns_count"] = len(quarter_headers)
+    metrics["max_allocated_quarter"] = quarter_headers[-1] if quarter_headers else "24Q1"
+    metrics["rows_with_quarter_allocations"] = 0
+
+    for rec in intermediate_records:
+        row_ext = [
+            rec["occ_str"],
+            rec["s_date_str"],
+            rec["e_date_str"],
+            rec["duration_str"],
+            rec["adj_income_str"],
+        ]
+
+        q_allocations = [""] * len(quarter_cols)
+        adj_s = rec["adj_income_str"]
+        s_s = rec["s_date_str"]
+        e_s = rec["e_date_str"]
+
+        if adj_s and s_s and e_s and "ERROR" not in s_s and "ERROR" not in e_s:
+            try:
+                adj_float = float(adj_s)
+                ds = datetime.datetime.strptime(s_s, "%d/%m/%Y").date()
+                de = datetime.datetime.strptime(e_s, "%d/%m/%Y").date()
+
+                had_alloc = False
+                for q_idx, (qy, qnum, _) in enumerate(quarter_cols):
+                    qm_start = (qnum - 1) * 3 + 1
+                    qm_end = qnum * 3
+
+                    # Count months of the invoice that fall into this quarter
+                    months_overlap = 0
+                    cy, cm = ds.year, ds.month
+                    while (cy < de.year) or (cy == de.year and cm <= de.month):
+                        if cy == qy and qm_start <= cm <= qm_end:
+                            months_overlap += 1
+                        cm += 1
+                        if cm > 12:
+                            cm = 1
+                            cy += 1
+
+                    if months_overlap > 0:
+                        allocated_val = months_overlap * adj_float
+                        q_allocations[q_idx] = f"{allocated_val:.2f}"
+                        had_alloc = True
+
+                if had_alloc:
+                    metrics["rows_with_quarter_allocations"] += 1
+            except Exception:
+                pass
+
+        final_rows.append(rec["base_row"] + row_ext + q_allocations)
 
     with open(output_csv_path, mode="w", encoding="utf-8-sig", newline="") as f_out:
         writer = csv.writer(f_out)
-        writer.writerows(enriched_rows)
+        writer.writerows(final_rows)
 
-    metrics["total_output_rows"] = len(enriched_rows) - 1
+    metrics["total_output_rows"] = len(final_rows) - 1
     return metrics
