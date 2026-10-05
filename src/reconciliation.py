@@ -96,13 +96,27 @@ def generate_income_working_file(
     header = reader[0]
     data_rows = reader[1:]
 
-    # Locate Column F (index 5) and Column J (index 9)
+    # Locate Column C (index 2), Column D (index 3), Column F (index 5), Column G (index 6), Column J (index 9)
+    col_c_idx = 2
+    if "קוד מיון" in header:
+        col_c_idx = header.index("קוד מיון")
+
+    col_d_idx = 3
+    if "ת.אסמכ" in header:
+        col_d_idx = header.index("ת.אסמכ")
+
     col_f_idx = 5
     if "אסמ'" in header:
         col_f_idx = header.index("אסמ'")
 
+    col_g_idx = 6
+    if "אסמ'2" in header:
+        col_g_idx = header.index("אסמ'2")
+
     col_j_idx = 9
-    if "חובה / זכות (שקל) זכות" in header:
+    if "חובה / זכות (שקל) חובה" in header and "חובה / זכות (שקל) זכות" in header:
+        col_j_idx = header.index("חובה / זכות (שקל) זכות")
+    elif "חובה / זכות (שקל) זכות" in header:
         col_j_idx = header.index("חובה / זכות (שקל) זכות")
 
     new_header = header + [
@@ -126,28 +140,47 @@ def generate_income_working_file(
         "duration_calculated_rows": 0,
         "duration_skipped_rows": 0,
         "adjusted_income_calculated_rows": 0,
+        "special_mion_direct_allocation_rows": 0,
     }
 
     intermediate_records: list[dict[str, Any]] = []
 
     for row in data_rows:
+        raw_c = row[col_c_idx].strip() if len(row) > col_c_idx else ""
+        raw_d = row[col_d_idx].strip() if len(row) > col_d_idx else ""
         raw_f = row[col_f_idx].strip() if len(row) > col_f_idx else ""
+        raw_g = row[col_g_idx].strip() if len(row) > col_g_idx else ""
         raw_j = row[col_j_idx].strip() if len(row) > col_j_idx else ""
 
+        # Determine lookup invoice key: primary Column F (אסמ'), fallback to Column G (אסמ'2) if Col F <= 0
         try:
             val_f = float(raw_f)
-            is_positive = val_f > 0
+            has_pos_f = val_f > 0
         except ValueError:
-            is_positive = False
+            has_pos_f = False
+
+        lookup_key = ""
+        if has_pos_f:
+            lookup_key = raw_f
+        else:
+            # Fallback to Column G (אסמ'2)
+            try:
+                val_g = float(raw_g)
+                has_pos_g = val_g > 0
+            except ValueError:
+                has_pos_g = False
+
+            if has_pos_g:
+                lookup_key = raw_g
 
         occ_str = ""
         s_date_str = ""
         e_date_str = ""
 
-        if not is_positive:
+        if not lookup_key:
             metrics["zero_or_non_positive_rows"] += 1
         else:
-            inv_key = raw_f
+            inv_key = lookup_key
             if inv_key.endswith(".0") and inv_key[:-2].isdigit():
                 inv_key = inv_key[:-2]
 
@@ -183,10 +216,14 @@ def generate_income_working_file(
                     s_date_str, e_date_str = matches[0]
 
         # Calculate duration and adjusted monthly income
+        # If Column C is 94501 or 93002: do NOT split income to quarters, skip duration calculation
         duration_str = ""
         adj_income_str = ""
+        is_special_mion = raw_c in ("94501", "93002")
 
-        if (
+        if is_special_mion:
+            metrics["special_mion_direct_allocation_rows"] += 1
+        elif (
             not s_date_str
             or not e_date_str
             or "ERROR" in s_date_str
@@ -216,6 +253,9 @@ def generate_income_working_file(
         # Intermediate collection before quarter allocation
         intermediate_records.append({
             "base_row": row,
+            "raw_c": raw_c,
+            "raw_d": raw_d,
+            "raw_j": raw_j,
             "occ_str": occ_str,
             "s_date_str": s_date_str,
             "e_date_str": e_date_str,
@@ -271,11 +311,36 @@ def generate_income_working_file(
         ]
 
         q_allocations = [""] * len(quarter_cols)
+        raw_c = rec["raw_c"]
+        raw_d = rec["raw_d"]
+        raw_j = rec["raw_j"]
         adj_s = rec["adj_income_str"]
         s_s = rec["s_date_str"]
         e_s = rec["e_date_str"]
 
-        if adj_s and s_s and e_s and "ERROR" not in s_s and "ERROR" not in e_s:
+        # Step A: If Column C is 94501 or 93002, do NOT split income to quarters.
+        # Instead, add the entire income amount to the appropriate quarter based on Column D (ת.אסמכ).
+        if raw_c in ("94501", "93002"):
+            cleaned_income = raw_j.replace(",", "").strip()
+            if cleaned_income and raw_d:
+                try:
+                    inc_val = float(cleaned_income)
+                    dt_d = datetime.datetime.strptime(
+                        raw_d, "%Y-%m-%d" if "-" in raw_d else "%d/%m/%Y"
+                    ).date()
+                    target_q_num = (dt_d.month - 1) // 3 + 1
+                    target_lbl = f"{str(dt_d.year)[-2:]}Q{target_q_num}"
+
+                    for q_idx, (_, _, q_lbl) in enumerate(quarter_cols):
+                        if q_lbl == target_lbl:
+                            q_allocations[q_idx] = f"{inc_val:.2f}"
+                            metrics["rows_with_quarter_allocations"] += 1
+                            break
+                except Exception:
+                    pass
+
+        # Step B: Normal multi-quarter split based on start and end dates
+        elif adj_s and s_s and e_s and "ERROR" not in s_s and "ERROR" not in e_s:
             try:
                 adj_float = float(adj_s)
                 ds = datetime.datetime.strptime(s_s, "%d/%m/%Y").date()

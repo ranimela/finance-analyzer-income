@@ -19,19 +19,20 @@ def test_generate_income_working_file(tmp_path: Path) -> None:
 
     # 1. Check metric consistency
     assert metrics["total_ledger_rows"] == 1367
-    assert metrics["zero_or_non_positive_rows"] == 34
-    assert metrics["ap_zero_matches"] == 504
+    assert metrics["zero_or_non_positive_rows"] == 30
+    assert metrics["ap_zero_matches"] == 506
     assert metrics["ap_single_matches"] == 392
-    assert metrics["ap_multiple_matches_consistent"] == 389
+    assert metrics["ap_multiple_matches_consistent"] == 391
     assert metrics["ap_multiple_matches_has_error"] == 48
     assert metrics["start_date_errors"] == 45
     assert metrics["end_date_errors"] == 46
-    assert metrics["duration_calculated_rows"] == 712
-    assert metrics["duration_skipped_rows"] == 655
-    assert metrics["adjusted_income_calculated_rows"] == 621
+    assert metrics["duration_calculated_rows"] == 666
+    assert metrics["duration_skipped_rows"] == 464
+    assert metrics["adjusted_income_calculated_rows"] == 593
+    assert metrics["special_mion_direct_allocation_rows"] == 237
     assert metrics["quarter_columns_count"] == 31
     assert metrics["max_allocated_quarter"] == "31Q3"
-    assert metrics["rows_with_quarter_allocations"] == 614
+    assert metrics["rows_with_quarter_allocations"] == 773
     assert metrics["total_output_rows"] == 1367
 
     # 2. Check output file integrity
@@ -50,9 +51,22 @@ def test_generate_income_working_file(tmp_path: Path) -> None:
     first_row = reader[1]
     assert first_row[13] == "3"  # 01/07/2026 to 30/09/2026 -> 3 months
     assert first_row[14] == "16271.00"  # 48813 / 3 = 16271.00
-    # 26Q3 is at index 15 + 10 = 25
     col_26q3_idx = header.index("26Q3")
     assert first_row[col_26q3_idx] == "48813.00"
+
+    # Verify fallback lookup on Col F=0 rows (e.g. key 250706 in Col G)
+    fallback_sample = [r for r in reader[1:] if r[5] in ("0", "0.0") and r[6] == "250706" and r[9] != ""][0]
+    assert fallback_sample[10] == "2"  # 2 occurrences found in AP
+    assert fallback_sample[11] == "01/08/2025"
+    assert fallback_sample[12] == "31/10/2025"
+    assert fallback_sample[13] == "3"
+
+    # Verify direct quarter assignment on 93002 row
+    special_sample = [r for r in reader[1:] if r[2] == "93002" and r[3] == "2024-06-30"][0]
+    assert special_sample[13] == ""  # duration skipped
+    assert special_sample[14] == ""  # adjusted income skipped
+    col_24q2_idx = header.index("24Q2")
+    assert special_sample[col_24q2_idx] == "6233164.75"
 
     # 3. Check error flagging behavior
     # Invoice Start Date is index 11, Invoice End Date is index 12
