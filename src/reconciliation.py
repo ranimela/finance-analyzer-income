@@ -96,7 +96,7 @@ def generate_income_working_file(
     header = reader[0]
     data_rows = reader[1:]
 
-    # Locate Column C (index 2), Column D (index 3), Column F (index 5), Column G (index 6), Column J (index 9)
+    # Locate Column C (index 2), Column D (index 3), Column F (index 5), Column G (index 6), Column I (index 8), Column J (index 9)
     col_c_idx = 2
     if "קוד מיון" in header:
         col_c_idx = header.index("קוד מיון")
@@ -113,13 +113,21 @@ def generate_income_working_file(
     if "אסמ'2" in header:
         col_g_idx = header.index("אסמ'2")
 
+    col_i_idx = 8
+    if "חובה / זכות (שקל) חובה" in header:
+        col_i_idx = header.index("חובה / זכות (שקל) חובה")
+
     col_j_idx = 9
-    if "חובה / זכות (שקל) חובה" in header and "חובה / זכות (שקל) זכות" in header:
-        col_j_idx = header.index("חובה / זכות (שקל) זכות")
-    elif "חובה / זכות (שקל) זכות" in header:
+    if "חובה / זכות (שקל) זכות" in header:
         col_j_idx = header.index("חובה / זכות (שקל) זכות")
 
-    new_header = header + [
+    # Insert "Total" after Column J (which is at index col_j_idx)
+    # The base header has 10 columns (0 to 9). Insert "Total" at index col_j_idx + 1
+    base_header_with_total = (
+        header[: col_j_idx + 1] + ["Total"] + header[col_j_idx + 1 :]
+    )
+
+    new_header = base_header_with_total + [
         "occurences found",
         "Invoice Start Date",
         "Invoice End Date",
@@ -150,7 +158,21 @@ def generate_income_working_file(
         raw_d = row[col_d_idx].strip() if len(row) > col_d_idx else ""
         raw_f = row[col_f_idx].strip() if len(row) > col_f_idx else ""
         raw_g = row[col_g_idx].strip() if len(row) > col_g_idx else ""
+        raw_i = row[col_i_idx].strip() if len(row) > col_i_idx else ""
         raw_j = row[col_j_idx].strip() if len(row) > col_j_idx else ""
+
+        # Calculate Total: Column J (Credit) - Column I (Debit)
+        cleaned_i = raw_i.replace(",", "").strip()
+        cleaned_j = raw_j.replace(",", "").strip()
+        val_i = float(cleaned_i) if cleaned_i else 0.0
+        val_j = float(cleaned_j) if cleaned_j else 0.0
+        total_val = val_j - val_i
+        total_str = f"{total_val:.2f}"
+
+        # Insert Total after Column J in row
+        row_with_total = (
+            row[: col_j_idx + 1] + [total_str] + row[col_j_idx + 1 :]
+        )
 
         # Determine lookup invoice key: primary Column F (אסמ'), fallback to Column G (אסמ'2) if Col F <= 0
         try:
@@ -239,11 +261,9 @@ def generate_income_working_file(
                 duration_str = str(duration)
                 metrics["duration_calculated_rows"] += 1
 
-                # Income from Col J (Credit)
-                cleaned_income = raw_j.replace(",", "").strip()
-                if cleaned_income:
-                    income_val = float(cleaned_income)
-                    adj_val = income_val / duration
+                # Use Total (Col J - Col I) for adjusted monthly income
+                if total_val != 0.0:
+                    adj_val = total_val / duration
                     adj_income_str = f"{adj_val:.2f}"
                     metrics["adjusted_income_calculated_rows"] += 1
             except Exception:
@@ -252,10 +272,10 @@ def generate_income_working_file(
 
         # Intermediate collection before quarter allocation
         intermediate_records.append({
-            "base_row": row,
+            "base_row": row_with_total,
             "raw_c": raw_c,
             "raw_d": raw_d,
-            "raw_j": raw_j,
+            "total_val": total_val,
             "occ_str": occ_str,
             "s_date_str": s_date_str,
             "e_date_str": e_date_str,
@@ -313,7 +333,7 @@ def generate_income_working_file(
         q_allocations = [""] * len(quarter_cols)
         raw_c = rec["raw_c"]
         raw_d = rec["raw_d"]
-        raw_j = rec["raw_j"]
+        total_val = rec["total_val"]
         adj_s = rec["adj_income_str"]
         s_s = rec["s_date_str"]
         e_s = rec["e_date_str"]
@@ -321,10 +341,8 @@ def generate_income_working_file(
         # Step A: If Column C is 94501 or 93002, do NOT split income to quarters.
         # Instead, add the entire income amount to the appropriate quarter based on Column D (ת.אסמכ).
         if raw_c in ("94501", "93002"):
-            cleaned_income = raw_j.replace(",", "").strip()
-            if cleaned_income and raw_d:
+            if total_val != 0.0 and raw_d:
                 try:
-                    inc_val = float(cleaned_income)
                     dt_d = datetime.datetime.strptime(
                         raw_d, "%Y-%m-%d" if "-" in raw_d else "%d/%m/%Y"
                     ).date()
@@ -333,7 +351,7 @@ def generate_income_working_file(
 
                     for q_idx, (_, _, q_lbl) in enumerate(quarter_cols):
                         if q_lbl == target_lbl:
-                            q_allocations[q_idx] = f"{inc_val:.2f}"
+                            q_allocations[q_idx] = f"{total_val:.2f}"
                             metrics["rows_with_quarter_allocations"] += 1
                             break
                 except Exception:

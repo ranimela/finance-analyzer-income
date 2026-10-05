@@ -28,11 +28,11 @@ def test_generate_income_working_file(tmp_path: Path) -> None:
     assert metrics["end_date_errors"] == 46
     assert metrics["duration_calculated_rows"] == 666
     assert metrics["duration_skipped_rows"] == 464
-    assert metrics["adjusted_income_calculated_rows"] == 593
+    assert metrics["adjusted_income_calculated_rows"] == 666
     assert metrics["special_mion_direct_allocation_rows"] == 237
     assert metrics["quarter_columns_count"] == 31
     assert metrics["max_allocated_quarter"] == "31Q3"
-    assert metrics["rows_with_quarter_allocations"] == 773
+    assert metrics["rows_with_quarter_allocations"] == 899
     assert metrics["total_output_rows"] == 1367
 
     # 2. Check output file integrity
@@ -42,44 +42,52 @@ def test_generate_income_working_file(tmp_path: Path) -> None:
 
     assert len(reader) == 1368  # 1 header + 1367 data rows
     header = reader[0]
-    assert len(header) == 46  # 15 base/calculated + 31 quarter columns (24Q1 to 31Q3)
+    assert len(header) == 47  # 16 base/calculated + 31 quarter columns (24Q1 to 31Q3)
 
-    assert header[15] == "24Q1"
+    assert header[10] == "Total"
+    assert header[11] == "occurences found"
+    assert header[12] == "Invoice Start Date"
+    assert header[13] == "Invoice End Date"
+    assert header[14] == "invoice month duration"
+    assert header[15] == "adjusted monthly income"
+    assert header[16] == "24Q1"
     assert header[-1] == "31Q3"
 
     # Verify duration and adjusted monthly income calculation logic on first data row
     first_row = reader[1]
-    assert first_row[13] == "3"  # 01/07/2026 to 30/09/2026 -> 3 months
-    assert first_row[14] == "16271.00"  # 48813 / 3 = 16271.00
+    assert first_row[10] == "48813.00"  # Total = Col J (48813) - Col I (0)
+    assert first_row[14] == "3"  # 01/07/2026 to 30/09/2026 -> 3 months
+    assert first_row[15] == "16271.00"  # 48813 / 3 = 16271.00
     col_26q3_idx = header.index("26Q3")
     assert first_row[col_26q3_idx] == "48813.00"
 
     # Verify fallback lookup on Col F=0 rows (e.g. key 250706 in Col G)
     fallback_sample = [r for r in reader[1:] if r[5] in ("0", "0.0") and r[6] == "250706" and r[9] != ""][0]
-    assert fallback_sample[10] == "2"  # 2 occurrences found in AP
-    assert fallback_sample[11] == "01/08/2025"
-    assert fallback_sample[12] == "31/10/2025"
-    assert fallback_sample[13] == "3"
+    assert fallback_sample[10] != ""  # Total
+    assert fallback_sample[11] == "2"  # 2 occurrences found in AP
+    assert fallback_sample[12] == "01/08/2025"
+    assert fallback_sample[13] == "31/10/2025"
+    assert fallback_sample[14] == "3"
 
     # Verify direct quarter assignment on 93002 row
     special_sample = [r for r in reader[1:] if r[2] == "93002" and r[3] == "2024-06-30"][0]
-    assert special_sample[13] == ""  # duration skipped
-    assert special_sample[14] == ""  # adjusted income skipped
+    assert special_sample[14] == ""  # duration skipped
+    assert special_sample[15] == ""  # adjusted income skipped
     col_24q2_idx = header.index("24Q2")
     assert special_sample[col_24q2_idx] == "6233164.75"
 
     # 3. Check error flagging behavior
-    # Invoice Start Date is index 11, Invoice End Date is index 12
-    start_err_rows = [r for r in reader[1:] if r[11] == "ERROR - multiple dates"]
-    end_err_rows = [r for r in reader[1:] if r[12] == "ERROR - multiple dates"]
+    # Invoice Start Date is index 12, Invoice End Date is index 13
+    start_err_rows = [r for r in reader[1:] if r[12] == "ERROR - multiple dates"]
+    end_err_rows = [r for r in reader[1:] if r[13] == "ERROR - multiple dates"]
     assert len(start_err_rows) == 45
     assert len(end_err_rows) == 46
 
     # Verify dd/mm/yyyy format on valid single matches
-    single_match_rows = [r for r in reader[1:] if r[10] == "1"]
+    single_match_rows = [r for r in reader[1:] if r[11] == "1"]
     assert len(single_match_rows) == 392
     for r in single_match_rows:
-        s_val, e_val = r[11], r[12]
+        s_val, e_val = r[12], r[13]
         if s_val:
             assert len(s_val) == 10 and s_val[2] == "/" and s_val[5] == "/", f"Invalid format: {s_val}"
         if e_val:
