@@ -105,24 +105,24 @@ def test_process_cancellations(tmp_path: Path) -> None:
     )
 
     assert metrics["total_input_rows"] == 1367
-    assert metrics["cancellation_notice_rows"] == 54
-    assert metrics["target_invoices_extracted"] == 49
-    assert metrics["original_invoice_rows_matched_in_col_f"] == 56
-    assert metrics["total_cancellations_cut"] == 109
-    assert metrics["retained_step2_rows"] == 1258
+    assert metrics["cancellation_notice_rows"] == 97  # 54 ביטול + 43 זיכוי
+    assert metrics["target_invoices_extracted"] == 61  # 49 + 12 distinct invoice targets
+    assert metrics["original_invoice_rows_matched_in_col_f"] == 77
+    assert metrics["total_cancellations_cut"] == 164
+    assert metrics["retained_step2_rows"] == 1203
 
     # Verify CSV line counts
     with open(output_csv, mode="r", encoding="utf-8-sig") as f:
         step2_rows = list(csv.reader(f))
-    assert len(step2_rows) == 1259  # 1 header + 1258 data rows
+    assert len(step2_rows) == 1204  # 1 header + 1203 data rows
 
     with open(output_canc_csv, mode="r", encoding="utf-8-sig") as f:
         canc_rows = list(csv.reader(f))
-    assert len(canc_rows) == 110  # 1 header + 109 data rows
+    assert len(canc_rows) == 165  # 1 header + 164 data rows
 
     # Verify Excel workbook tabs
     import openpyxl
     wb = openpyxl.load_workbook(output_xlsx)
     assert wb.sheetnames == ["income_working_step2", "Cancellations"]
-    assert wb["income_working_step2"].max_row == 1259
-    assert wb["Cancellations"].max_row == 110
+    assert wb["income_working_step2"].max_row == 1204
+    assert wb["Cancellations"].max_row == 165

@@ -387,15 +387,17 @@ def process_cancellations(
     output_step2_csv_path: Path,
     output_cancellations_csv_path: Path | None = None,
     output_step2_xlsx_path: Path | None = None,
+    filter_terms: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Process cancellations in income_working.csv.
+    """Process cancellations and credit notes in income_working.csv.
 
     Logic:
-    - On Column H ('פרטים'), identify lines containing the term 'ביטול'.
+    - On Column H ('פרטים'), identify lines containing the specified filter terms
+      (default: ['ביטול', 'זיכוי']).
     - Extract numeric invoice numbers referenced in those cells (ignoring isolated years/dates).
     - Look for those referenced invoice numbers in Column F ('אסמ'').
     - Cut (remove from main file) both:
-        1. The lines containing the cancellation term ('ביטול')
+        1. The lines containing the filter terms ('ביטול', 'זיכוי')
         2. The lines matching the referenced invoice numbers in Column F ('אסמ'')
     - Paste all cut lines into a 'Cancellations' dataset.
     - Emit the remaining rows into income_working_step2.csv.
@@ -407,11 +409,15 @@ def process_cancellations(
         output_step2_csv_path: Path to write income_working_step2.csv.
         output_cancellations_csv_path: Path to write cancellations.csv (optional).
         output_step2_xlsx_path: Path to write income_working_step2.xlsx (optional).
+        filter_terms: List of terms in Column H to filter (defaults to ['ביטול', 'זיכוי']).
 
     Returns:
         dict[str, Any]: Metrics tracking rows processed, cut, and retained.
     """
     import re
+
+    if filter_terms is None:
+        filter_terms = ["ביטול", "זיכוי"]
 
     if not input_csv_path.exists():
         raise FileNotFoundError(f"Input CSV not found: {input_csv_path}")
@@ -435,18 +441,21 @@ def process_cancellations(
     if "פרטים" in header:
         col_h_idx = header.index("פרטים")
 
-    # 1. Identify cancellation rows and extract target invoice numbers
+    # 1. Identify cancellation/credit notice rows and extract target invoice numbers
     cancel_row_indices: set[int] = set()
     target_invoices: set[str] = set()
 
     for idx, r in enumerate(data_rows):
         h_val = r[col_h_idx].strip() if len(r) > col_h_idx else ""
-        if "ביטול" in h_val:
+        if any(term in h_val for term in filter_terms):
             cancel_row_indices.add(idx)
             # Remove date patterns like DD/MM/YYYY or DD/MM/YY
             text_no_dates = re.sub(r"\d{1,2}/\d{1,2}/\d{2,4}", "", h_val)
             for num in re.findall(r"\d+", text_no_dates):
-                if num not in ("2024", "2025", "2026", "2023", "2022", "2021", "2020", "8", "15", "20", "30", "06", "31", "12", "23"):
+                if num not in (
+                    "2024", "2025", "2026", "2023", "2022", "2021", "2020",
+                    "8", "15", "20", "30", "06", "31", "12", "23", "0001813"
+                ):
                     target_invoices.add(num)
 
     # 2. Identify rows where Column F matches target invoices
