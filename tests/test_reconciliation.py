@@ -84,3 +84,45 @@ def test_generate_income_working_file(tmp_path: Path) -> None:
             assert len(s_val) == 10 and s_val[2] == "/" and s_val[5] == "/", f"Invalid format: {s_val}"
         if e_val:
             assert len(e_val) == 10 and e_val[2] == "/" and e_val[5] == "/", f"Invalid format: {e_val}"
+
+
+def test_process_cancellations(tmp_path: Path) -> None:
+    """Test process_cancellations cuts both cancellation notices and matched original invoices."""
+    from src.reconciliation import process_cancellations
+
+    input_csv = Path("data/outputs/income_working.csv")
+    assert input_csv.exists()
+
+    output_csv = tmp_path / "income_working_step2.csv"
+    output_canc_csv = tmp_path / "cancellations.csv"
+    output_xlsx = tmp_path / "income_working_step2.xlsx"
+
+    metrics = process_cancellations(
+        input_csv,
+        output_csv,
+        output_cancellations_csv_path=output_canc_csv,
+        output_step2_xlsx_path=output_xlsx,
+    )
+
+    assert metrics["total_input_rows"] == 1367
+    assert metrics["cancellation_notice_rows"] == 54
+    assert metrics["target_invoices_extracted"] == 49
+    assert metrics["original_invoice_rows_matched_in_col_f"] == 56
+    assert metrics["total_cancellations_cut"] == 109
+    assert metrics["retained_step2_rows"] == 1258
+
+    # Verify CSV line counts
+    with open(output_csv, mode="r", encoding="utf-8-sig") as f:
+        step2_rows = list(csv.reader(f))
+    assert len(step2_rows) == 1259  # 1 header + 1258 data rows
+
+    with open(output_canc_csv, mode="r", encoding="utf-8-sig") as f:
+        canc_rows = list(csv.reader(f))
+    assert len(canc_rows) == 110  # 1 header + 109 data rows
+
+    # Verify Excel workbook tabs
+    import openpyxl
+    wb = openpyxl.load_workbook(output_xlsx)
+    assert wb.sheetnames == ["income_working_step2", "Cancellations"]
+    assert wb["income_working_step2"].max_row == 1259
+    assert wb["Cancellations"].max_row == 110

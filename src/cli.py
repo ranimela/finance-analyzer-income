@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from src.cleaner import clean_income_ledger
-from src.reconciliation import generate_income_working_file
+from src.reconciliation import generate_income_working_file, process_cancellations
 
 
 def main() -> None:
@@ -50,6 +50,29 @@ def main() -> None:
         help="Path for income_working.csv output.",
     )
 
+    # Cancel command
+    cancel_parser = subparsers.add_parser(
+        "cancel", help="Filter cancellations into Cancellations tab."
+    )
+    cancel_parser.add_argument(
+        "--input",
+        type=Path,
+        default=Path("data/outputs/income_working.csv"),
+        help="Path to income_working.csv.",
+    )
+    cancel_parser.add_argument(
+        "--output-csv",
+        type=Path,
+        default=Path("data/outputs/income_working_step2.csv"),
+        help="Path for income_working_step2.csv output.",
+    )
+    cancel_parser.add_argument(
+        "--output-xlsx",
+        type=Path,
+        default=Path("data/outputs/income_working_step2.xlsx"),
+        help="Path for income_working_step2.xlsx output.",
+    )
+
     args = parser.parse_args()
 
     sys.stdout.reconfigure(encoding="utf-8")
@@ -70,6 +93,21 @@ def main() -> None:
             print("\n--- Reconciliation Working File Success ---")
             print(f"Output File: {recon_output_p}")
             print(json.dumps(r_metrics, indent=2, ensure_ascii=False))
+
+        if args.command == "cancel" or args.command is None:
+            in_p = getattr(args, "input", Path("data/outputs/income_working.csv"))
+            out_csv_p = getattr(args, "output_csv", Path("data/outputs/income_working_step2.csv"))
+            out_xlsx_p = getattr(args, "output_xlsx", Path("data/outputs/income_working_step2.xlsx"))
+            c_metrics = process_cancellations(
+                in_p,
+                out_csv_p,
+                output_cancellations_csv_path=Path("data/outputs/cancellations.csv"),
+                output_step2_xlsx_path=out_xlsx_p,
+            )
+            print("\n--- Cancellations Processing Success ---")
+            print(f"Output CSV: {out_csv_p}")
+            print(f"Output XLSX: {out_xlsx_p}")
+            print(json.dumps(c_metrics, indent=2, ensure_ascii=False))
 
     except Exception as exc:
         print(f"Error during execution: {exc}", file=sys.stderr)

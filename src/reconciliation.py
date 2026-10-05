@@ -380,3 +380,128 @@ def generate_income_working_file(
 
     metrics["total_output_rows"] = len(final_rows) - 1
     return metrics
+
+
+def process_cancellations(
+    input_csv_path: Path,
+    output_step2_csv_path: Path,
+    output_cancellations_csv_path: Path | None = None,
+    output_step2_xlsx_path: Path | None = None,
+) -> dict[str, Any]:
+    """Process cancellations in income_working.csv.
+
+    Logic:
+    - On Column H ('פרטים'), identify lines containing the term 'ביטול'.
+    - Extract numeric invoice numbers referenced in those cells (ignoring isolated years/dates).
+    - Look for those referenced invoice numbers in Column F ('אסמ'').
+    - Cut (remove from main file) both:
+        1. The lines containing the cancellation term ('ביטול')
+        2. The lines matching the referenced invoice numbers in Column F ('אסמ'')
+    - Paste all cut lines into a 'Cancellations' dataset.
+    - Emit the remaining rows into income_working_step2.csv.
+    - Also emit an Excel workbook income_working_step2.xlsx containing two tabs:
+        'income_working_step2' and 'Cancellations'.
+
+    Args:
+        input_csv_path: Path to income_working.csv.
+        output_step2_csv_path: Path to write income_working_step2.csv.
+        output_cancellations_csv_path: Path to write cancellations.csv (optional).
+        output_step2_xlsx_path: Path to write income_working_step2.xlsx (optional).
+
+    Returns:
+        dict[str, Any]: Metrics tracking rows processed, cut, and retained.
+    """
+    import re
+
+    if not input_csv_path.exists():
+        raise FileNotFoundError(f"Input CSV not found: {input_csv_path}")
+
+    output_step2_csv_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(input_csv_path, mode="r", encoding="utf-8-sig", newline="") as f_in:
+        rows = list(csv.reader(f_in))
+
+    if not rows:
+        raise ValueError(f"Input file is empty: {input_csv_path}")
+
+    header = rows[0]
+    data_rows = rows[1:]
+
+    col_f_idx = 5
+    if "אסמ'" in header:
+        col_f_idx = header.index("אסמ'")
+
+    col_h_idx = 7
+    if "פרטים" in header:
+        col_h_idx = header.index("פרטים")
+
+    # 1. Identify cancellation rows and extract target invoice numbers
+    cancel_row_indices: set[int] = set()
+    target_invoices: set[str] = set()
+
+    for idx, r in enumerate(data_rows):
+        h_val = r[col_h_idx].strip() if len(r) > col_h_idx else ""
+        if "ביטול" in h_val:
+            cancel_row_indices.add(idx)
+            # Remove date patterns like DD/MM/YYYY or DD/MM/YY
+            text_no_dates = re.sub(r"\d{1,2}/\d{1,2}/\d{2,4}", "", h_val)
+            for num in re.findall(r"\d+", text_no_dates):
+                if num not in ("2024", "2025", "2026", "2023", "2022", "2021", "2020", "8", "15", "20", "30", "06", "31", "12", "23"):
+                    target_invoices.add(num)
+
+    # 2. Identify rows where Column F matches target invoices
+    matched_col_f_indices: set[int] = set()
+    for idx, r in enumerate(data_rows):
+        f_val = r[col_f_idx].strip() if len(r) > col_f_idx else ""
+        if f_val.endswith(".0") and f_val[:-2].isdigit():
+            f_val = f_val[:-2]
+        if f_val in target_invoices:
+            matched_col_f_indices.add(idx)
+
+    # Union of all rows to cut
+    all_cut_indices = cancel_row_indices.union(matched_col_f_indices)
+
+    cancellation_rows: list[list[str]] = [header]
+    step2_rows: list[list[str]] = [header]
+
+    for idx, r in enumerate(data_rows):
+        if idx in all_cut_indices:
+            cancellation_rows.append(r)
+        else:
+            step2_rows.append(r)
+
+    # 3. Write output CSV files
+    with open(output_step2_csv_path, mode="w", encoding="utf-8-sig", newline="") as f_out:
+        writer = csv.writer(f_out)
+        writer.writerows(step2_rows)
+
+    if output_cancellations_csv_path:
+        output_cancellations_csv_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_cancellations_csv_path, mode="w", encoding="utf-8-sig", newline="") as f_out:
+            writer = csv.writer(f_out)
+            writer.writerows(cancellation_rows)
+
+    # 4. Write Excel workbook with both tabs
+    if output_step2_xlsx_path:
+        wb = openpyxl.Workbook()
+        ws_step2 = wb.active
+        ws_step2.title = "income_working_step2"
+        for r in step2_rows:
+            ws_step2.append(r)
+
+        ws_cancel = wb.create_sheet(title="Cancellations")
+        for r in cancellation_rows:
+            ws_cancel.append(r)
+
+        wb.save(output_step2_xlsx_path)
+
+    metrics: dict[str, Any] = {
+        "total_input_rows": len(data_rows),
+        "cancellation_notice_rows": len(cancel_row_indices),
+        "target_invoices_extracted": len(target_invoices),
+        "original_invoice_rows_matched_in_col_f": len(matched_col_f_indices),
+        "total_cancellations_cut": len(all_cut_indices),
+        "retained_step2_rows": len(step2_rows) - 1,
+    }
+    return metrics
+
