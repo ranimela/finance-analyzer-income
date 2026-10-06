@@ -527,8 +527,11 @@ def clean_income_ledger(
         if any(term in h_val for term in filter_terms):
             cancel_notice_indices.add(idx)
             text_no_dates = re.sub(r"\d{1,2}/\d{1,2}/\d{2,4}", "", h_val)
-            for num in re.findall(r"\d+", text_no_dates):
-                if num not in (
+            extracted_nums = [
+                num
+                for num in re.findall(r"\d+", text_no_dates)
+                if num
+                not in (
                     "2024",
                     "2025",
                     "2026",
@@ -545,8 +548,19 @@ def clean_income_ledger(
                     "12",
                     "23",
                     "0001813",
-                ):
+                )
+            ]
+            if extracted_nums:
+                for num in extracted_nums:
                     canc_target_invoices.add(num)
+            else:
+                # In lines with 'זיכוי' or 'ביטול' without numeric expression in Col H:
+                # look at invoice number in Column F
+                f_val = r[col_f_idx].strip() if len(r) > col_f_idx else ""
+                if f_val.endswith(".0") and f_val[:-2].isdigit():
+                    f_val = f_val[:-2]
+                if f_val and f_val not in ("0", "0.0"):
+                    canc_target_invoices.add(f_val)
 
     matched_original_indices: set[int] = set()
     for idx, r in enumerate(step12_retained_rows):

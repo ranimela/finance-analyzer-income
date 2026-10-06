@@ -54,17 +54,17 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
     assert metrics["step12_classification_target_invoices"] == 74
     assert metrics["step12_classification_rows_cut"] == 150
     assert metrics["step13_cancellation_notices_found"] == 91
-    assert metrics["step13_target_invoices_extracted"] == 57
-    assert metrics["step13_original_invoices_cut"] == 64
-    assert metrics["step13_total_cancellations_cut"] == 145
-    assert metrics["step13_stage1_final_active_rows"] == 1060
+    assert metrics["step13_target_invoices_extracted"] == 82
+    assert metrics["step13_original_invoices_cut"] == 136
+    assert metrics["step13_total_cancellations_cut"] == 187
+    assert metrics["step13_stage1_final_active_rows"] == 1018
 
     # 2. Verify output CSV file properties (Active clean rows)
     assert output_csv.exists()
     with open(output_csv, mode="r", encoding="utf-8-sig", newline="") as f:
         reader = list(csv.reader(f))
 
-    assert len(reader) == 1061  # 1 header + 1060 active data rows
+    assert len(reader) == 1019  # 1 header + 1018 active data rows
 
     header = reader[0]
     expected_headers = [
@@ -93,16 +93,16 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
     assert output_canc_csv.exists()
     with open(output_canc_csv, mode="r", encoding="utf-8-sig", newline="") as f_c:
         reader_canc = list(csv.reader(f_c))
-    assert len(reader_canc) == 146  # 1 header + 145 cut rows
+    assert len(reader_canc) == 188  # 1 header + 187 cut rows
     assert reader_canc[0] == expected_headers
 
     # 5. Verify Excel workbook (3 tabs)
     import openpyxl
     wb = openpyxl.load_workbook(output_xlsx)
     assert wb.sheetnames == ["כרטסות הכנסות פעילות", "income classification", "Cancellations"]
-    assert wb["כרטסות הכנסות פעילות"].max_row == 1061
+    assert wb["כרטסות הכנסות פעילות"].max_row == 1019
     assert wb["income classification"].max_row == 151
-    assert wb["Cancellations"].max_row == 146
+    assert wb["Cancellations"].max_row == 188
 
     # 5. Verify clean content rules across all emitted active rows
     for row_idx, row in enumerate(reader[1:], 2):
