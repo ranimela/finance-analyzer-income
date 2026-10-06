@@ -12,8 +12,15 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
     input_file = Path("data/inputs/כרטסות הכנסות 24-26.xlsx")
     assert input_file.exists(), f"Input file not found at {input_file}"
 
-    output_csv = tmp_path / "test_step6.csv"
-    metrics = clean_income_ledger(input_file, output_csv)
+    output_csv = tmp_path / "test_stage1.csv"
+    output_canc_csv = tmp_path / "test_cancellations.csv"
+    output_xlsx = tmp_path / "test_stage1.xlsx"
+    metrics = clean_income_ledger(
+        input_file,
+        output_csv,
+        output_cancellations_path=output_canc_csv,
+        output_xlsx_path=output_xlsx,
+    )
 
     # 1. Verify metrics accounting
     assert metrics["step0_raw_rows_read"] == 9725
@@ -40,13 +47,19 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
     assert metrics["step8_mion_rows_deleted"] == 2622
     assert metrics["step9_col_b_hafrasha_deleted"] == 88
     assert metrics["step9_final_emitted_rows"] == 1367
+    assert metrics["step10_total_column_added"] is True
+    assert metrics["step11_cancellation_notices_found"] == 97
+    assert metrics["step11_target_invoices_extracted"] == 61
+    assert metrics["step11_original_invoices_cut"] == 77
+    assert metrics["step11_total_cancellations_cut"] == 164
+    assert metrics["step11_stage1_final_active_rows"] == 1203
 
-    # 2. Verify output CSV file properties
+    # 2. Verify output CSV file properties (Active clean rows)
     assert output_csv.exists()
     with open(output_csv, mode="r", encoding="utf-8-sig", newline="") as f:
         reader = list(csv.reader(f))
 
-    assert len(reader) == 1368  # 1 header + 1367 data rows
+    assert len(reader) == 1204  # 1 header + 1203 active data rows
 
     header = reader[0]
     expected_headers = [
@@ -60,10 +73,25 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
         "פרטים",
         "חובה / זכות (שקל) חובה",
         "חובה / זכות (שקל) זכות",
+        "Total",
     ]
     assert header == expected_headers
 
-    # 3. Verify clean content rules across all emitted rows
+    # 3. Verify cancellations CSV file properties
+    assert output_canc_csv.exists()
+    with open(output_canc_csv, mode="r", encoding="utf-8-sig", newline="") as f_c:
+        reader_canc = list(csv.reader(f_c))
+    assert len(reader_canc) == 165  # 1 header + 164 cut rows
+    assert reader_canc[0] == expected_headers
+
+    # 4. Verify Excel workbook
+    import openpyxl
+    wb = openpyxl.load_workbook(output_xlsx)
+    assert wb.sheetnames == ["כרטסות הכנסות פעילות", "Cancellations"]
+    assert wb["כרטסות הכנסות פעילות"].max_row == 1204
+    assert wb["Cancellations"].max_row == 165
+
+    # 5. Verify clean content rules across all emitted active rows
     for row_idx, row in enumerate(reader[1:], 2):
         col_a, col_b, col_c = row[0], row[1], row[2]
         # Forward fill check: account columns must never be blank
@@ -77,6 +105,11 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
         assert "הפרשה" not in col_a, f"Row {row_idx}: contains הפרשה"
         assert "סהכ לדוח" not in col_a.replace('"', "").replace("'", ""), f"Row {row_idx}: contains report total"
 
-        # Check closing balance isn't present in details column (index 12)
-        if len(row) > 12:
-            assert "יתרת סגירה" not in row[12], f"Row {row_idx}: contains יתרת סגירה"
+        # Verify Total calculation: Total = Col J (Credit) - Col I (Debit)
+        val_i_str = row[8].replace(",", "").strip()
+        val_j_str = row[9].replace(",", "").strip()
+        total_str = row[10].strip()
+        val_i = float(val_i_str) if val_i_str else 0.0
+        val_j = float(val_j_str) if val_j_str else 0.0
+        expected_total = round(val_j - val_i, 2)
+        assert abs(float(total_str) - expected_total) < 0.01, f"Row {row_idx}: Total mismatch"

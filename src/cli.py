@@ -14,8 +14,8 @@ def main() -> None:
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
-    # Clean command
-    clean_parser = subparsers.add_parser("clean", help="Clean raw income ledger Excel file.")
+    # Clean command (Stage 1)
+    clean_parser = subparsers.add_parser("clean", help="Clean raw income ledger Excel file (Stage 1).")
     clean_parser.add_argument(
         "--input",
         type=Path,
@@ -25,8 +25,20 @@ def main() -> None:
     clean_parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/outputs/כרטסות הכנסות 24-26_step9.csv"),
-        help="Path for cleaned Step 9 output CSV file.",
+        default=Path("data/outputs/כרטסות הכנסות 24-26_stage1.csv"),
+        help="Path for cleaned Stage 1 active output CSV file.",
+    )
+    clean_parser.add_argument(
+        "--cancellations",
+        type=Path,
+        default=Path("data/outputs/כרטסות הכנסות 24-26_cancellations.csv"),
+        help="Path for cancellations output CSV file.",
+    )
+    clean_parser.add_argument(
+        "--output-xlsx",
+        type=Path,
+        default=Path("data/outputs/כרטסות הכנסות 24-26_stage1.xlsx"),
+        help="Path for Stage 1 multi-tab Excel workbook.",
     )
 
     # Reconcile command
@@ -79,10 +91,19 @@ def main() -> None:
     try:
         if args.command == "clean" or args.command is None:
             input_p = getattr(args, "input", Path("data/inputs/כרטסות הכנסות 24-26.xlsx"))
-            output_p = getattr(args, "output", Path("data/outputs/כרטסות הכנסות 24-26_step9.csv"))
-            metrics = clean_income_ledger(input_p, output_p)
-            print("\n--- Cleaning Pipeline Success ---")
-            print(f"Output File: {output_p}")
+            output_p = getattr(args, "output", Path("data/outputs/כרטסות הכנסות 24-26_stage1.csv"))
+            canc_p = getattr(args, "cancellations", Path("data/outputs/כרטסות הכנסות 24-26_cancellations.csv"))
+            xlsx_p = getattr(args, "output_xlsx", Path("data/outputs/כרטסות הכנסות 24-26_stage1.xlsx"))
+            metrics = clean_income_ledger(
+                input_p,
+                output_p,
+                output_cancellations_path=canc_p,
+                output_xlsx_path=xlsx_p,
+            )
+            print("\n--- Stage 1 Cleaning & Cancellations Pipeline Success ---")
+            print(f"Active Output CSV: {output_p}")
+            print(f"Cancellations CSV: {canc_p}")
+            print(f"Stage 1 Workbook:  {xlsx_p}")
             print(json.dumps(metrics, indent=2, ensure_ascii=False))
 
         if args.command == "reconcile" or args.command is None:

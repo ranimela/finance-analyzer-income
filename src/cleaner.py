@@ -1,6 +1,6 @@
-"""Module for cleaning Israeli General Ledger Excel exports (Income accounts).
+"""Module for cleaning Israeli General Ledger Excel exports (Income accounts - Stage 1).
 
-Implements the 6-step cleaning pipeline adapted for income ledgers:
+Implements the Stage 1 pipeline adapted for income ledgers:
 - Step 1: Skips rows 1-3, extracts row 4 as headers with synthetic names for cols A-C,
           and filters opening balance ('יתרת פתיחה') and closing balance ('יתרת סגירה').
 - Step 2: Locates 'סה"כ מפתח חשבון' rows and deletes them along with subsequent follower rows.
@@ -8,12 +8,19 @@ Implements the 6-step cleaning pipeline adapted for income ledgers:
 - Step 4: Deletes rows where transaction columns D to Q are all empty.
 - Step 5: Deletes rows where Column A contains 'הפרשה'.
 - Step 6: Deletes rows where Column A contains 'סהכ לדוח' / 'סה"כ לדוח'.
-Outputs the final clean dataset directly to step6 CSV encoded in utf-8-sig.
+- Step 7: Deletes redundant columns D, E, F, G, H, N, Q (retains 10 columns).
+- Step 8: Filters 'קוד מיון' (Col C) to keep only 90001-90100, 90800, 93000-94501.
+- Step 9: Filters Column B ('מפתח חשבון') provision accounts ('-ה' / 'ה-').
+- Step 10: Calculates Net Total (Col J - Col I) and inserts 'Total' column after Column J.
+- Step 11: Identifies cancellations/credit notices in Col H ('ביטול' / 'זיכוי'), extracts referenced
+           invoice numbers, cuts matching Col F rows into 'Cancellations', and retains active rows.
+Outputs the final clean Stage 1 dataset directly to CSV and multi-tab Excel.
 """
 
 import csv
 import datetime
 from pathlib import Path
+import re
 from typing import Any
 import openpyxl
 
@@ -21,12 +28,18 @@ import openpyxl
 def clean_income_ledger(
     input_path: Path,
     output_path: Path,
+    output_cancellations_path: Path | None = None,
+    output_xlsx_path: Path | None = None,
+    emit_step9_csv: bool = True,
 ) -> dict[str, Any]:
-    """Execute the full 6-step cleaning pipeline on an income general ledger.
+    """Execute the Stage 1 cleaning, totaling, and cancellation separation pipeline.
 
     Args:
         input_path: Path to the source .xlsx file.
-        output_path: Target path for the final step6 .csv file.
+        output_path: Target path for the final Stage 1 active .csv file.
+        output_cancellations_path: Optional target path for cancellations .csv.
+        output_xlsx_path: Optional target path for multi-tab Stage 1 .xlsx workbook.
+        emit_step9_csv: Whether to also write intermediate כרטסות הכנסות 24-26_step9.csv.
 
     Returns:
         dict[str, Any]: Audit metrics tracking row counts and filtering impact at each step.
@@ -54,6 +67,18 @@ def clean_income_ledger(
         "step5_retained_rows": 0,
         "step6_report_totals_deleted": 0,
         "step6_final_emitted_data_rows": 0,
+        "step7_columns_retained": 0,
+        "step7_columns_deleted": 0,
+        "step8_mion_rows_retained": 0,
+        "step8_mion_rows_deleted": 0,
+        "step9_col_b_hafrasha_deleted": 0,
+        "step9_final_emitted_rows": 0,
+        "step10_total_column_added": True,
+        "step11_cancellation_notices_found": 0,
+        "step11_target_invoices_extracted": 0,
+        "step11_original_invoices_cut": 0,
+        "step11_total_cancellations_cut": 0,
+        "step11_stage1_final_active_rows": 0,
     }
 
     # Open workbook in read-only and data-only mode to prevent memory exhaustion
@@ -308,11 +333,138 @@ def clean_income_ledger(
     metrics["step9_col_b_hafrasha_deleted"] = dropped_step9_count
     metrics["step9_final_emitted_rows"] = len(step9_rows)
 
-    # Write final cleaned rows directly to output CSV
+    # -------------------------------------------------------------
+    # Step 10: Calculate Net Total (Col J - Col I) and insert Total column
+    # -------------------------------------------------------------
+    col_i_idx = (
+        final_headers.index("חובה / זכות (שקל) חובה")
+        if "חובה / זכות (שקל) חובה" in final_headers
+        else 8
+    )
+    col_j_idx = (
+        final_headers.index("חובה / זכות (שקל) זכות")
+        if "חובה / זכות (שקל) זכות" in final_headers
+        else 9
+    )
+
+    stage1_headers = (
+        final_headers[: col_j_idx + 1] + ["Total"] + final_headers[col_j_idx + 1 :]
+    )
+
+    step10_rows: list[list[str]] = []
+    for row in step9_rows:
+        val_i_str = (
+            row[col_i_idx].replace(",", "").strip() if len(row) > col_i_idx else ""
+        )
+        val_j_str = (
+            row[col_j_idx].replace(",", "").strip() if len(row) > col_j_idx else ""
+        )
+        val_i = float(val_i_str) if val_i_str else 0.0
+        val_j = float(val_j_str) if val_j_str else 0.0
+        total_val = val_j - val_i
+        total_str = f"{total_val:.2f}"
+        row_with_total = (
+            row[: col_j_idx + 1] + [total_str] + row[col_j_idx + 1 :]
+        )
+        step10_rows.append(row_with_total)
+
+    # -------------------------------------------------------------
+    # Step 11: Cut cancellations and credit notes into separate dataset
+    # -------------------------------------------------------------
+    col_f_idx = stage1_headers.index("אסמ'") if "אסמ'" in stage1_headers else 5
+    col_h_idx = stage1_headers.index("פרטים") if "פרטים" in stage1_headers else 7
+
+    filter_terms = ["ביטול", "זיכוי"]
+    cancel_notice_indices: set[int] = set()
+    target_invoices: set[str] = set()
+
+    for idx, r in enumerate(step10_rows):
+        h_val = r[col_h_idx].strip() if len(r) > col_h_idx else ""
+        if any(term in h_val for term in filter_terms):
+            cancel_notice_indices.add(idx)
+            text_no_dates = re.sub(r"\d{1,2}/\d{1,2}/\d{2,4}", "", h_val)
+            for num in re.findall(r"\d+", text_no_dates):
+                if num not in (
+                    "2024",
+                    "2025",
+                    "2026",
+                    "2023",
+                    "2022",
+                    "2021",
+                    "2020",
+                    "8",
+                    "15",
+                    "20",
+                    "30",
+                    "06",
+                    "31",
+                    "12",
+                    "23",
+                    "0001813",
+                ):
+                    target_invoices.add(num)
+
+    matched_original_indices: set[int] = set()
+    for idx, r in enumerate(step10_rows):
+        f_val = r[col_f_idx].strip() if len(r) > col_f_idx else ""
+        if f_val.endswith(".0") and f_val[:-2].isdigit():
+            f_val = f_val[:-2]
+        if f_val and f_val in target_invoices:
+            matched_original_indices.add(idx)
+
+    all_cut_indices = cancel_notice_indices | matched_original_indices
+    step11_retained_rows = [
+        r for idx, r in enumerate(step10_rows) if idx not in all_cut_indices
+    ]
+    step11_cancellations_rows = [
+        r for idx, r in enumerate(step10_rows) if idx in all_cut_indices
+    ]
+
+    metrics["step10_total_column_added"] = True
+    metrics["step11_cancellation_notices_found"] = len(cancel_notice_indices)
+    metrics["step11_target_invoices_extracted"] = len(target_invoices)
+    metrics["step11_original_invoices_cut"] = len(matched_original_indices)
+    metrics["step11_total_cancellations_cut"] = len(all_cut_indices)
+    metrics["step11_stage1_final_active_rows"] = len(step11_retained_rows)
+
+    # Write intermediate step 9 CSV if requested
+    if emit_step9_csv:
+        step9_path = output_path.parent / "כרטסות הכנסות 24-26_step9.csv"
+        with open(step9_path, mode="w", encoding="utf-8-sig", newline="") as f_s9:
+            writer_s9 = csv.writer(f_s9)
+            writer_s9.writerow(final_headers)
+            writer_s9.writerows(step9_rows)
+
+    # Write final active Stage 1 clean rows directly to output CSV
     with open(output_path, mode="w", encoding="utf-8-sig", newline="") as f_out:
         writer = csv.writer(f_out)
-        writer.writerow(final_headers)
-        writer.writerows(step9_rows)
+        writer.writerow(stage1_headers)
+        writer.writerows(step11_retained_rows)
+
+    # Write cancellations CSV if requested
+    if output_cancellations_path:
+        with open(
+            output_cancellations_path, mode="w", encoding="utf-8-sig", newline=""
+        ) as f_canc:
+            writer_canc = csv.writer(f_canc)
+            writer_canc.writerow(stage1_headers)
+            writer_canc.writerows(step11_cancellations_rows)
+
+    # Write Stage 1 multi-tab Excel workbook if requested
+    if output_xlsx_path:
+        wb_out = openpyxl.Workbook()
+        ws_active = wb_out.active
+        ws_active.title = "כרטסות הכנסות פעילות"
+        ws_active.append(stage1_headers)
+        for r in step11_retained_rows:
+            ws_active.append(r)
+
+        ws_canc = wb_out.create_sheet(title="Cancellations")
+        ws_canc.append(stage1_headers)
+        for r in step11_cancellations_rows:
+            ws_canc.append(r)
+
+        wb_out.save(output_xlsx_path)
 
     return metrics
 
