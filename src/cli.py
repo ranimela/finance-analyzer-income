@@ -25,19 +25,25 @@ def main() -> None:
     clean_parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/outputs/כרטסות הכנסות 24-26_stage1.csv"),
+        default=Path("data/outputs/כרטסות הכנסות 24-26_stage1_v2.csv"),
         help="Path for cleaned Stage 1 active output CSV file.",
+    )
+    clean_parser.add_argument(
+        "--classification",
+        type=Path,
+        default=Path("data/outputs/כרטסות הכנסות 24-26_classification_v2.csv"),
+        help="Path for income classification output CSV file.",
     )
     clean_parser.add_argument(
         "--cancellations",
         type=Path,
-        default=Path("data/outputs/כרטסות הכנסות 24-26_cancellations.csv"),
+        default=Path("data/outputs/כרטסות הכנסות 24-26_cancellations_v2.csv"),
         help="Path for cancellations output CSV file.",
     )
     clean_parser.add_argument(
         "--output-xlsx",
         type=Path,
-        default=Path("data/outputs/כרטסות הכנסות 24-26_stage1.xlsx"),
+        default=Path("data/outputs/כרטסות הכנסות 24-26_stage1_v2.xlsx"),
         help="Path for Stage 1 multi-tab Excel workbook.",
     )
 
@@ -91,19 +97,22 @@ def main() -> None:
     try:
         if args.command == "clean" or args.command is None:
             input_p = getattr(args, "input", Path("data/inputs/כרטסות הכנסות 24-26.xlsx"))
-            output_p = getattr(args, "output", Path("data/outputs/כרטסות הכנסות 24-26_stage1.csv"))
-            canc_p = getattr(args, "cancellations", Path("data/outputs/כרטסות הכנסות 24-26_cancellations.csv"))
-            xlsx_p = getattr(args, "output_xlsx", Path("data/outputs/כרטסות הכנסות 24-26_stage1.xlsx"))
+            output_p = getattr(args, "output", Path("data/outputs/כרטסות הכנסות 24-26_stage1_v2.csv"))
+            class_p = getattr(args, "classification", Path("data/outputs/כרטסות הכנסות 24-26_classification_v2.csv"))
+            canc_p = getattr(args, "cancellations", Path("data/outputs/כרטסות הכנסות 24-26_cancellations_v2.csv"))
+            xlsx_p = getattr(args, "output_xlsx", Path("data/outputs/כרטסות הכנסות 24-26_stage1_v2.xlsx"))
             metrics = clean_income_ledger(
                 input_p,
                 output_p,
                 output_cancellations_path=canc_p,
+                output_classification_path=class_p,
                 output_xlsx_path=xlsx_p,
             )
-            print("\n--- Stage 1 Cleaning & Cancellations Pipeline Success ---")
-            print(f"Active Output CSV: {output_p}")
-            print(f"Cancellations CSV: {canc_p}")
-            print(f"Stage 1 Workbook:  {xlsx_p}")
+            print("\n--- Stage 1 Cleaning & Classification Pipeline Success ---")
+            print(f"Active Output CSV:       {output_p}")
+            print(f"Classification CSV:      {class_p}")
+            print(f"Cancellations CSV:       {canc_p}")
+            print(f"Stage 1 Workbook:        {xlsx_p}")
             print(json.dumps(metrics, indent=2, ensure_ascii=False))
 
         if args.command == "reconcile" or args.command is None:

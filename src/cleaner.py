@@ -17,6 +17,7 @@ Implements the Stage 1 pipeline adapted for income ledgers:
 Outputs the final clean Stage 1 dataset directly to CSV and multi-tab Excel.
 """
 
+from collections import defaultdict
 import csv
 import datetime
 from pathlib import Path
@@ -29,15 +30,17 @@ def clean_income_ledger(
     input_path: Path,
     output_path: Path,
     output_cancellations_path: Path | None = None,
+    output_classification_path: Path | None = None,
     output_xlsx_path: Path | None = None,
     emit_step9_csv: bool = True,
 ) -> dict[str, Any]:
-    """Execute the Stage 1 cleaning, totaling, and cancellation separation pipeline.
+    """Execute the Stage 1 cleaning, totaling, and classification/cancellation separation pipeline.
 
     Args:
         input_path: Path to the source .xlsx file.
         output_path: Target path for the final Stage 1 active .csv file.
         output_cancellations_path: Optional target path for cancellations .csv.
+        output_classification_path: Optional target path for income classification .csv.
         output_xlsx_path: Optional target path for multi-tab Stage 1 .xlsx workbook.
         emit_step9_csv: Whether to also write intermediate כרטסות הכנסות 24-26_step9.csv.
 
@@ -74,11 +77,14 @@ def clean_income_ledger(
         "step9_col_b_hafrasha_deleted": 0,
         "step9_final_emitted_rows": 0,
         "step10_total_column_added": True,
-        "step11_cancellation_notices_found": 0,
-        "step11_target_invoices_extracted": 0,
-        "step11_original_invoices_cut": 0,
-        "step11_total_cancellations_cut": 0,
-        "step11_stage1_final_active_rows": 0,
+        "step11_closing_entries_deleted": 0,
+        "step12_classification_target_invoices": 0,
+        "step12_classification_rows_cut": 0,
+        "step13_cancellation_notices_found": 0,
+        "step13_target_invoices_extracted": 0,
+        "step13_original_invoices_cut": 0,
+        "step13_total_cancellations_cut": 0,
+        "step13_stage1_final_active_rows": 0,
     }
 
     # Open workbook in read-only and data-only mode to prevent memory exhaustion
@@ -369,16 +375,97 @@ def clean_income_ledger(
         step10_rows.append(row_with_total)
 
     # -------------------------------------------------------------
-    # Step 11: Cut cancellations and credit notes into separate dataset
+    # Step 11: Delete year-end closing entries ('סגירת שנת' in Col H 'פרטים')
     # -------------------------------------------------------------
-    col_f_idx = stage1_headers.index("אסמ'") if "אסמ'" in stage1_headers else 5
     col_h_idx = stage1_headers.index("פרטים") if "פרטים" in stage1_headers else 7
+    step11_rows: list[list[str]] = []
+    closing_deleted = 0
+    for row in step10_rows:
+        h_val = row[col_h_idx].strip() if len(row) > col_h_idx else ""
+        if "סגירת שנת" in h_val:
+            closing_deleted += 1
+            continue
+        step11_rows.append(row)
 
+    metrics["step11_closing_entries_deleted"] = closing_deleted
+
+    # -------------------------------------------------------------
+    # Step 12: Group by account (Col B), find 'מיון הכנסות' in Col H with non-empty Col I,
+    # and cut lines with matching invoice numbers (Col F, fallback Col G) to 'income classification'
+    # -------------------------------------------------------------
+    account_col_idx = (
+        stage1_headers.index("מפתח חשבון") if "מפתח חשבון" in stage1_headers else 1
+    )
+    col_f_idx = stage1_headers.index("אסמ'") if "אסמ'" in stage1_headers else 5
+    col_g_idx = stage1_headers.index("אסמ'2") if "אסמ'2" in stage1_headers else 6
+    col_i_idx = (
+        stage1_headers.index("חובה / זכות (שקל) חובה")
+        if "חובה / זכות (שקל) חובה" in stage1_headers
+        else 8
+    )
+
+    by_account: dict[str, list[tuple[int, list[str]]]] = defaultdict(list)
+    for idx, row in enumerate(step11_rows):
+        b_val = row[account_col_idx].strip() if len(row) > account_col_idx else ""
+        by_account[b_val].append((idx, row))
+
+    mion_cut_indices: set[int] = set()
+    total_target_invoices_extracted: set[str] = set()
+
+    for acc, acc_entries in by_account.items():
+        acc_target_invoices: set[str] = set()
+        for _, row in acc_entries:
+            h_val = row[col_h_idx].strip() if len(row) > col_h_idx else ""
+            i_val = row[col_i_idx].strip() if len(row) > col_i_idx else ""
+            if "מיון הכנסות" in h_val and i_val != "":
+                f_val = row[col_f_idx].strip() if len(row) > col_f_idx else ""
+                if f_val.endswith(".0") and f_val[:-2].isdigit():
+                    f_val = f_val[:-2]
+                g_val = row[col_g_idx].strip() if len(row) > col_g_idx else ""
+                if g_val.endswith(".0") and g_val[:-2].isdigit():
+                    g_val = g_val[:-2]
+
+                target = f_val if (f_val and f_val not in ("0", "0.0")) else g_val
+                if target:
+                    acc_target_invoices.add(target)
+                if f_val:
+                    acc_target_invoices.add(f_val)
+
+        total_target_invoices_extracted.update(acc_target_invoices)
+
+        for orig_idx, row in acc_entries:
+            f_val = row[col_f_idx].strip() if len(row) > col_f_idx else ""
+            if f_val.endswith(".0") and f_val[:-2].isdigit():
+                f_val = f_val[:-2]
+            g_val = row[col_g_idx].strip() if len(row) > col_g_idx else ""
+            if g_val.endswith(".0") and g_val[:-2].isdigit():
+                g_val = g_val[:-2]
+
+            if f_val in acc_target_invoices or (
+                f_val in ("0", "0.0") and g_val in acc_target_invoices
+            ):
+                mion_cut_indices.add(orig_idx)
+
+    step12_classification_rows = [
+        row for idx, row in enumerate(step11_rows) if idx in mion_cut_indices
+    ]
+    step12_retained_rows = [
+        row for idx, row in enumerate(step11_rows) if idx not in mion_cut_indices
+    ]
+
+    metrics["step12_classification_target_invoices"] = len(
+        total_target_invoices_extracted
+    )
+    metrics["step12_classification_rows_cut"] = len(step12_classification_rows)
+
+    # -------------------------------------------------------------
+    # Step 13: Cut cancellations and credit notes into separate dataset
+    # -------------------------------------------------------------
     filter_terms = ["ביטול", "זיכוי"]
     cancel_notice_indices: set[int] = set()
-    target_invoices: set[str] = set()
+    canc_target_invoices: set[str] = set()
 
-    for idx, r in enumerate(step10_rows):
+    for idx, r in enumerate(step12_retained_rows):
         h_val = r[col_h_idx].strip() if len(r) > col_h_idx else ""
         if any(term in h_val for term in filter_terms):
             cancel_notice_indices.add(idx)
@@ -402,30 +489,30 @@ def clean_income_ledger(
                     "23",
                     "0001813",
                 ):
-                    target_invoices.add(num)
+                    canc_target_invoices.add(num)
 
     matched_original_indices: set[int] = set()
-    for idx, r in enumerate(step10_rows):
+    for idx, r in enumerate(step12_retained_rows):
         f_val = r[col_f_idx].strip() if len(r) > col_f_idx else ""
         if f_val.endswith(".0") and f_val[:-2].isdigit():
             f_val = f_val[:-2]
-        if f_val and f_val in target_invoices:
+        if f_val and f_val in canc_target_invoices:
             matched_original_indices.add(idx)
 
-    all_cut_indices = cancel_notice_indices | matched_original_indices
-    step11_retained_rows = [
-        r for idx, r in enumerate(step10_rows) if idx not in all_cut_indices
+    all_canc_cut_indices = cancel_notice_indices | matched_original_indices
+    step13_retained_rows = [
+        r for idx, r in enumerate(step12_retained_rows) if idx not in all_canc_cut_indices
     ]
-    step11_cancellations_rows = [
-        r for idx, r in enumerate(step10_rows) if idx in all_cut_indices
+    step13_cancellations_rows = [
+        r for idx, r in enumerate(step12_retained_rows) if idx in all_canc_cut_indices
     ]
 
     metrics["step10_total_column_added"] = True
-    metrics["step11_cancellation_notices_found"] = len(cancel_notice_indices)
-    metrics["step11_target_invoices_extracted"] = len(target_invoices)
-    metrics["step11_original_invoices_cut"] = len(matched_original_indices)
-    metrics["step11_total_cancellations_cut"] = len(all_cut_indices)
-    metrics["step11_stage1_final_active_rows"] = len(step11_retained_rows)
+    metrics["step13_cancellation_notices_found"] = len(cancel_notice_indices)
+    metrics["step13_target_invoices_extracted"] = len(canc_target_invoices)
+    metrics["step13_original_invoices_cut"] = len(matched_original_indices)
+    metrics["step13_total_cancellations_cut"] = len(all_canc_cut_indices)
+    metrics["step13_stage1_final_active_rows"] = len(step13_retained_rows)
 
     # Write intermediate step 9 CSV if requested
     if emit_step9_csv:
@@ -439,7 +526,16 @@ def clean_income_ledger(
     with open(output_path, mode="w", encoding="utf-8-sig", newline="") as f_out:
         writer = csv.writer(f_out)
         writer.writerow(stage1_headers)
-        writer.writerows(step11_retained_rows)
+        writer.writerows(step13_retained_rows)
+
+    # Write income classification CSV if requested
+    if output_classification_path:
+        with open(
+            output_classification_path, mode="w", encoding="utf-8-sig", newline=""
+        ) as f_class:
+            writer_class = csv.writer(f_class)
+            writer_class.writerow(stage1_headers)
+            writer_class.writerows(step12_classification_rows)
 
     # Write cancellations CSV if requested
     if output_cancellations_path:
@@ -448,7 +544,7 @@ def clean_income_ledger(
         ) as f_canc:
             writer_canc = csv.writer(f_canc)
             writer_canc.writerow(stage1_headers)
-            writer_canc.writerows(step11_cancellations_rows)
+            writer_canc.writerows(step13_cancellations_rows)
 
     # Write Stage 1 multi-tab Excel workbook if requested
     if output_xlsx_path:
@@ -456,12 +552,17 @@ def clean_income_ledger(
         ws_active = wb_out.active
         ws_active.title = "כרטסות הכנסות פעילות"
         ws_active.append(stage1_headers)
-        for r in step11_retained_rows:
+        for r in step13_retained_rows:
             ws_active.append(r)
+
+        ws_class = wb_out.create_sheet(title="income classification")
+        ws_class.append(stage1_headers)
+        for r in step12_classification_rows:
+            ws_class.append(r)
 
         ws_canc = wb_out.create_sheet(title="Cancellations")
         ws_canc.append(stage1_headers)
-        for r in step11_cancellations_rows:
+        for r in step13_cancellations_rows:
             ws_canc.append(r)
 
         wb_out.save(output_xlsx_path)

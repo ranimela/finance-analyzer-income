@@ -12,13 +12,15 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
     input_file = Path("data/inputs/כרטסות הכנסות 24-26.xlsx")
     assert input_file.exists(), f"Input file not found at {input_file}"
 
-    output_csv = tmp_path / "test_stage1.csv"
-    output_canc_csv = tmp_path / "test_cancellations.csv"
-    output_xlsx = tmp_path / "test_stage1.xlsx"
+    output_csv = tmp_path / "test_stage1_v2.csv"
+    output_class_csv = tmp_path / "test_classification_v2.csv"
+    output_canc_csv = tmp_path / "test_cancellations_v2.csv"
+    output_xlsx = tmp_path / "test_stage1_v2.xlsx"
     metrics = clean_income_ledger(
         input_file,
         output_csv,
         output_cancellations_path=output_canc_csv,
+        output_classification_path=output_class_csv,
         output_xlsx_path=output_xlsx,
     )
 
@@ -48,18 +50,21 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
     assert metrics["step9_col_b_hafrasha_deleted"] == 88
     assert metrics["step9_final_emitted_rows"] == 1367
     assert metrics["step10_total_column_added"] is True
-    assert metrics["step11_cancellation_notices_found"] == 97
-    assert metrics["step11_target_invoices_extracted"] == 61
-    assert metrics["step11_original_invoices_cut"] == 77
-    assert metrics["step11_total_cancellations_cut"] == 164
-    assert metrics["step11_stage1_final_active_rows"] == 1203
+    assert metrics["step11_closing_entries_deleted"] == 12
+    assert metrics["step12_classification_target_invoices"] == 127
+    assert metrics["step12_classification_rows_cut"] == 263
+    assert metrics["step13_cancellation_notices_found"] == 90
+    assert metrics["step13_target_invoices_extracted"] == 56
+    assert metrics["step13_original_invoices_cut"] == 61
+    assert metrics["step13_total_cancellations_cut"] == 141
+    assert metrics["step13_stage1_final_active_rows"] == 951
 
     # 2. Verify output CSV file properties (Active clean rows)
     assert output_csv.exists()
     with open(output_csv, mode="r", encoding="utf-8-sig", newline="") as f:
         reader = list(csv.reader(f))
 
-    assert len(reader) == 1204  # 1 header + 1203 active data rows
+    assert len(reader) == 952  # 1 header + 951 active data rows
 
     header = reader[0]
     expected_headers = [
@@ -77,19 +82,27 @@ def test_clean_income_ledger_pipeline(tmp_path: Path) -> None:
     ]
     assert header == expected_headers
 
-    # 3. Verify cancellations CSV file properties
+    # 3. Verify income classification CSV file properties
+    assert output_class_csv.exists()
+    with open(output_class_csv, mode="r", encoding="utf-8-sig", newline="") as f_cl:
+        reader_class = list(csv.reader(f_cl))
+    assert len(reader_class) == 264  # 1 header + 263 cut classification rows
+    assert reader_class[0] == expected_headers
+
+    # 4. Verify cancellations CSV file properties
     assert output_canc_csv.exists()
     with open(output_canc_csv, mode="r", encoding="utf-8-sig", newline="") as f_c:
         reader_canc = list(csv.reader(f_c))
-    assert len(reader_canc) == 165  # 1 header + 164 cut rows
+    assert len(reader_canc) == 142  # 1 header + 141 cut rows
     assert reader_canc[0] == expected_headers
 
-    # 4. Verify Excel workbook
+    # 5. Verify Excel workbook (3 tabs)
     import openpyxl
     wb = openpyxl.load_workbook(output_xlsx)
-    assert wb.sheetnames == ["כרטסות הכנסות פעילות", "Cancellations"]
-    assert wb["כרטסות הכנסות פעילות"].max_row == 1204
-    assert wb["Cancellations"].max_row == 165
+    assert wb.sheetnames == ["כרטסות הכנסות פעילות", "income classification", "Cancellations"]
+    assert wb["כרטסות הכנסות פעילות"].max_row == 952
+    assert wb["income classification"].max_row == 264
+    assert wb["Cancellations"].max_row == 142
 
     # 5. Verify clean content rules across all emitted active rows
     for row_idx, row in enumerate(reader[1:], 2):
