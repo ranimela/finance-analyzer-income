@@ -26,6 +26,39 @@ from typing import Any
 import openpyxl
 
 
+def _safe_write_csv(
+    path: Path,
+    header: list[str],
+    rows: list[list[str]],
+    encoding: str = "utf-8-sig",
+) -> Path:
+    """Write rows to CSV, falling back to a _new suffix if the file is locked by Excel."""
+    try:
+        with open(path, mode="w", encoding=encoding, newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(rows)
+        return path
+    except PermissionError:
+        fallback = path.with_stem(f"{path.stem}_new")
+        with open(fallback, mode="w", encoding=encoding, newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(rows)
+        return fallback
+
+
+def _safe_save_workbook(wb: openpyxl.Workbook, path: Path) -> Path:
+    """Save openpyxl workbook, falling back to a _new suffix if locked by Excel."""
+    try:
+        wb.save(path)
+        return path
+    except PermissionError:
+        fallback = path.with_stem(f"{path.stem}_new")
+        wb.save(fallback)
+        return fallback
+
+
 def clean_income_ledger(
     input_path: Path,
     output_path: Path,
@@ -404,13 +437,26 @@ def clean_income_ledger(
         else 8
     )
 
+    col_d_idx = stage1_headers.index("ת.אסמכ") if "ת.אסמכ" in stage1_headers else 3
+    col_total_idx = (
+        stage1_headers.index("Total") if "Total" in stage1_headers else 10
+    )
+
+    def extract_year(date_str: str) -> str:
+        s = date_str.strip()
+        if "-" in s:
+            return s.split("-")[0]
+        if "/" in s:
+            return s.split("/")[-1]
+        return ""
+
     by_account: dict[str, list[tuple[int, list[str]]]] = defaultdict(list)
     for idx, row in enumerate(step11_rows):
         b_val = row[account_col_idx].strip() if len(row) > account_col_idx else ""
         by_account[b_val].append((idx, row))
 
     mion_cut_indices: set[int] = set()
-    total_target_invoices_extracted: set[str] = set()
+    qualifying_invoices: set[str] = set()
 
     for acc, acc_entries in by_account.items():
         acc_target_invoices: set[str] = set()
@@ -428,23 +474,36 @@ def clean_income_ledger(
                 target = f_val if (f_val and f_val not in ("0", "0.0")) else g_val
                 if target:
                     acc_target_invoices.add(target)
-                if f_val:
-                    acc_target_invoices.add(f_val)
 
-        total_target_invoices_extracted.update(acc_target_invoices)
+        for target in acc_target_invoices:
+            matching_entries: list[tuple[int, list[str]]] = []
+            for orig_idx, row in acc_entries:
+                f_val = row[col_f_idx].strip() if len(row) > col_f_idx else ""
+                if f_val.endswith(".0") and f_val[:-2].isdigit():
+                    f_val = f_val[:-2]
+                g_val = row[col_g_idx].strip() if len(row) > col_g_idx else ""
+                if g_val.endswith(".0") and g_val[:-2].isdigit():
+                    g_val = g_val[:-2]
 
-        for orig_idx, row in acc_entries:
-            f_val = row[col_f_idx].strip() if len(row) > col_f_idx else ""
-            if f_val.endswith(".0") and f_val[:-2].isdigit():
-                f_val = f_val[:-2]
-            g_val = row[col_g_idx].strip() if len(row) > col_g_idx else ""
-            if g_val.endswith(".0") and g_val[:-2].isdigit():
-                g_val = g_val[:-2]
+                if f_val == target or (f_val in ("0", "0.0") and g_val == target):
+                    matching_entries.append((orig_idx, row))
 
-            if f_val in acc_target_invoices or (
-                f_val in ("0", "0.0") and g_val in acc_target_invoices
-            ):
-                mion_cut_indices.add(orig_idx)
+            if len(matching_entries) >= 2:
+                years = set(
+                    extract_year(r[col_d_idx]) for _, r in matching_entries
+                )
+                amounts = set(
+                    round(abs(float(r[col_total_idx].strip())), 2)
+                    for _, r in matching_entries
+                    if r[col_total_idx].strip()
+                )
+                same_year = len(years) == 1 and "" not in years
+                same_amount = len(amounts) == 1
+
+                if same_year and same_amount:
+                    qualifying_invoices.add(target)
+                    for orig_idx, _ in matching_entries:
+                        mion_cut_indices.add(orig_idx)
 
     step12_classification_rows = [
         row for idx, row in enumerate(step11_rows) if idx in mion_cut_indices
@@ -453,9 +512,7 @@ def clean_income_ledger(
         row for idx, row in enumerate(step11_rows) if idx not in mion_cut_indices
     ]
 
-    metrics["step12_classification_target_invoices"] = len(
-        total_target_invoices_extracted
-    )
+    metrics["step12_classification_target_invoices"] = len(qualifying_invoices)
     metrics["step12_classification_rows_cut"] = len(step12_classification_rows)
 
     # -------------------------------------------------------------
@@ -517,34 +574,31 @@ def clean_income_ledger(
     # Write intermediate step 9 CSV if requested
     if emit_step9_csv:
         step9_path = output_path.parent / "כרטסות הכנסות 24-26_step9.csv"
-        with open(step9_path, mode="w", encoding="utf-8-sig", newline="") as f_s9:
-            writer_s9 = csv.writer(f_s9)
-            writer_s9.writerow(final_headers)
-            writer_s9.writerows(step9_rows)
+        _safe_write_csv(step9_path, final_headers, step9_rows)
 
     # Write final active Stage 1 clean rows directly to output CSV
-    with open(output_path, mode="w", encoding="utf-8-sig", newline="") as f_out:
-        writer = csv.writer(f_out)
-        writer.writerow(stage1_headers)
-        writer.writerows(step13_retained_rows)
+    actual_active = _safe_write_csv(
+        output_path, stage1_headers, step13_retained_rows
+    )
+    metrics["written_active_csv"] = str(actual_active)
 
     # Write income classification CSV if requested
     if output_classification_path:
-        with open(
-            output_classification_path, mode="w", encoding="utf-8-sig", newline=""
-        ) as f_class:
-            writer_class = csv.writer(f_class)
-            writer_class.writerow(stage1_headers)
-            writer_class.writerows(step12_classification_rows)
+        actual_class = _safe_write_csv(
+            output_classification_path,
+            stage1_headers,
+            step12_classification_rows,
+        )
+        metrics["written_classification_csv"] = str(actual_class)
 
     # Write cancellations CSV if requested
     if output_cancellations_path:
-        with open(
-            output_cancellations_path, mode="w", encoding="utf-8-sig", newline=""
-        ) as f_canc:
-            writer_canc = csv.writer(f_canc)
-            writer_canc.writerow(stage1_headers)
-            writer_canc.writerows(step13_cancellations_rows)
+        actual_canc = _safe_write_csv(
+            output_cancellations_path,
+            stage1_headers,
+            step13_cancellations_rows,
+        )
+        metrics["written_cancellations_csv"] = str(actual_canc)
 
     # Write Stage 1 multi-tab Excel workbook if requested
     if output_xlsx_path:
@@ -565,7 +619,8 @@ def clean_income_ledger(
         for r in step13_cancellations_rows:
             ws_canc.append(r)
 
-        wb_out.save(output_xlsx_path)
+        actual_xlsx = _safe_save_workbook(wb_out, output_xlsx_path)
+        metrics["written_xlsx"] = str(actual_xlsx)
 
     return metrics
 
